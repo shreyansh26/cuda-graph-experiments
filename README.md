@@ -1,6 +1,7 @@
 # PyTorch CUDA Graphs POC
 
 This POC compares eager training vs CUDA Graph replay for a small MLP and exports PyTorch profiler traces that open in Perfetto.
+Profiling uses `torch.profiler.schedule(wait, warmup, active, repeat)` with `on_trace_ready`.
 
 ## Files
 
@@ -16,23 +17,23 @@ This POC compares eager training vs CUDA Graph replay for a small MLP and export
 ## Run Benchmarks (no profiler)
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 conda run -n shreyansh-env-py12 \
-  python cuda_graph_poc.py --metrics-json results/eager_default.json
+python cuda_graph_poc.py --metrics-json results/eager_default.json
 
-CUDA_VISIBLE_DEVICES=1 conda run -n shreyansh-env-py12 \
-  python cuda_graph_poc.py --use-cuda-graph --metrics-json results/graph_default.json
+python cuda_graph_poc.py --use-cuda-graph --metrics-json results/graph_default.json
 ```
 
 ## Run Profiler Traces for Perfetto
 
 ```bash
-CUDA_VISIBLE_DEVICES=1 conda run -n shreyansh-env-py12 \
-  python cuda_graph_poc.py --profile --train-steps 300 --warmup-steps 20 \
-  --trace-name eager --metrics-json results/eager_profile.json
+python cuda_graph_poc.py --profile --trace-name eager --metrics-json results/eager_profile.json
 
-CUDA_VISIBLE_DEVICES=1 conda run -n shreyansh-env-py12 \
-  python cuda_graph_poc.py --use-cuda-graph --profile --train-steps 300 --warmup-steps 20 \
-  --trace-name cuda_graph --metrics-json results/graph_profile.json
+python cuda_graph_poc.py --use-cuda-graph --profile --trace-name cuda_graph --metrics-json results/graph_profile.json
+```
+
+Optional schedule tuning:
+
+```bash
+--profile-wait 10 --profile-warmup 10 --profile-active 100 --profile-repeat 1
 ```
 
 Generated traces:
