@@ -59,6 +59,10 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--profile", action="store_true", help="Enable PyTorch profiler")
     parser.add_argument("--profile-dir", type=Path, default=Path("profiles"), help="Trace output directory")
+    parser.add_argument("--profile-wait", type=int, default=10, help="Profiler schedule wait steps")
+    parser.add_argument("--profile-warmup", type=int, default=10, help="Profiler schedule warmup steps")
+    parser.add_argument("--profile-active", type=int, default=100, help="Profiler schedule active steps")
+    parser.add_argument("--profile-repeat", type=int, default=1, help="Profiler schedule repeat count")
     parser.add_argument(
         "--trace-name",
         type=str,
@@ -76,6 +80,21 @@ def parse_args() -> argparse.Namespace:
         parser.error("--train-steps must be > 0")
     if args.depth <= 0:
         parser.error("--depth must be > 0")
+    if args.profile_wait < 0:
+        parser.error("--profile-wait must be >= 0")
+    if args.profile_warmup < 0:
+        parser.error("--profile-warmup must be >= 0")
+    if args.profile_active <= 0:
+        parser.error("--profile-active must be > 0")
+    if args.profile_repeat <= 0:
+        parser.error("--profile-repeat must be > 0")
+    if args.profile:
+        cycle_len = args.profile_wait + args.profile_warmup + args.profile_active
+        if args.train_steps < cycle_len:
+            parser.error(
+                "--train-steps must be >= --profile-wait + --profile-warmup + "
+                "--profile-active when --profile is enabled"
+            )
 
     return args
 
@@ -133,16 +152,45 @@ def make_dataset(
     return inputs, targets
 
 
-def build_profiler(enabled: bool) -> Optional[torch.profiler.profile]:
+def build_profiler(
+    *,
+    enabled: bool,
+    mode: str,
+    profile_dir: Path,
+    trace_name: Optional[str],
+    wait_steps: int,
+    warmup_steps: int,
+    active_steps: int,
+    repeat: int,
+) -> tuple[Optional[torch.profiler.profile], list[Path], str]:
     if not enabled:
-        return None
+        return None, [], trace_name or mode
 
-    return torch.profiler.profile(
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    trace_stem = trace_name or mode
+    trace_paths: list[Path] = []
+
+    def on_trace_ready(prof: torch.profiler.profile) -> None:
+        trace_index = len(trace_paths)
+        suffix = "" if repeat == 1 else f"_{trace_index}"
+        trace_path = profile_dir / f"{trace_stem}{suffix}.json"
+        prof.export_chrome_trace(str(trace_path))
+        trace_paths.append(trace_path)
+
+    profiler = torch.profiler.profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+        schedule=torch.profiler.schedule(
+            wait=wait_steps,
+            warmup=warmup_steps,
+            active=active_steps,
+            repeat=repeat,
+        ),
+        on_trace_ready=on_trace_ready,
         record_shapes=True,
         profile_memory=True,
         with_stack=False,
     )
+    return profiler, trace_paths, trace_stem
 
 
 def run_once(args: argparse.Namespace) -> Dict[str, Any]:
@@ -226,9 +274,16 @@ def run_once(args: argparse.Namespace) -> Dict[str, Any]:
         # Match the untimed prime update used by graph capture path.
         eager_step(inputs[args.warmup_steps], targets[args.warmup_steps])
 
-    profiler = build_profiler(args.profile)
-    if profiler is not None:
-        profiler.__enter__()
+    profiler, trace_paths, trace_stem = build_profiler(
+        enabled=args.profile,
+        mode=mode,
+        profile_dir=args.profile_dir,
+        trace_name=args.trace_name,
+        wait_steps=args.profile_wait,
+        warmup_steps=args.profile_warmup,
+        active_steps=args.profile_active,
+        repeat=args.profile_repeat,
+    )
 
     start_step = args.warmup_steps + 1
     end_step = start_step + args.train_steps
@@ -236,29 +291,40 @@ def run_once(args: argparse.Namespace) -> Dict[str, Any]:
     torch.cuda.synchronize()
     start_t = time.perf_counter()
 
-    for step in range(start_step, end_step):
-        if args.use_cuda_graph:
-            assert graph is not None and static_x is not None and static_y is not None
-            static_x.copy_(inputs[step], non_blocking=True)
-            static_y.copy_(targets[step], non_blocking=True)
-            graph.replay()
-            loss = static_loss
-        else:
-            loss = eager_step(inputs[step], targets[step])
-
-        if profiler is not None:
-            profiler.step()
+    if profiler is not None:
+        with profiler:
+            for step in range(start_step, end_step):
+                if args.use_cuda_graph:
+                    assert graph is not None and static_x is not None and static_y is not None
+                    static_x.copy_(inputs[step], non_blocking=True)
+                    static_y.copy_(targets[step], non_blocking=True)
+                    graph.replay()
+                    loss = static_loss
+                else:
+                    loss = eager_step(inputs[step], targets[step])
+                profiler.step()
+    else:
+        for step in range(start_step, end_step):
+            if args.use_cuda_graph:
+                assert graph is not None and static_x is not None and static_y is not None
+                static_x.copy_(inputs[step], non_blocking=True)
+                static_y.copy_(targets[step], non_blocking=True)
+                graph.replay()
+                loss = static_loss
+            else:
+                loss = eager_step(inputs[step], targets[step])
 
     torch.cuda.synchronize()
     total_time_s = time.perf_counter() - start_t
 
     trace_path = None
     if profiler is not None:
-        profiler.__exit__(None, None, None)
-        args.profile_dir.mkdir(parents=True, exist_ok=True)
-        trace_stem = args.trace_name or mode
-        trace_path = args.profile_dir / f"{trace_stem}.json"
-        profiler.export_chrome_trace(str(trace_path))
+        if not trace_paths:
+            # Fallback for unexpected schedule edge cases.
+            fallback_path = args.profile_dir / f"{trace_stem}.json"
+            profiler.export_chrome_trace(str(fallback_path))
+            trace_paths.append(fallback_path)
+        trace_path = trace_paths[0]
 
     # One final synchronized read for scalar loss reporting.
     final_loss = float(loss.detach().item())
@@ -275,6 +341,7 @@ def run_once(args: argparse.Namespace) -> Dict[str, Any]:
         "avg_step_ms": (total_time_s / args.train_steps) * 1000.0,
         "final_loss": final_loss,
         "trace_file": str(trace_path) if trace_path is not None else None,
+        "trace_files": [str(path) for path in trace_paths],
     }
 
     return result
