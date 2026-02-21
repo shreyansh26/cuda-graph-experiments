@@ -17,9 +17,9 @@ Profiling uses `torch.profiler.schedule(wait, warmup, active, repeat)` with `on_
 ## Run Benchmarks (no profiler)
 
 ```bash
-python cuda_graph_poc.py --metrics-json results/eager_default.json
+python cuda_graph_poc.py --metrics-json results/eager.json
 
-python cuda_graph_poc.py --use-cuda-graph --metrics-json results/graph_default.json
+python cuda_graph_poc.py --use-cuda-graph --metrics-json results/graph.json
 ```
 
 ## Run Profiler Traces for Perfetto
@@ -49,11 +49,18 @@ Generated traces:
 
 ## Current Validation Results
 
-From `results/eager_default.json` and `results/graph_default.json`:
+From `results/eager.json` and `results/graph.json` (`warmup_steps=25`, `train_steps=1200`):
 
-- Eager total time: `1.2975 s`
-- CUDA Graph total time: `0.5449 s`
-- Speedup: `2.38x`
+- Eager total time: `1.3150 s`
+- CUDA Graph total time: `0.3445 s`
+- Speedup: `3.82x`
+- Final loss delta: `9.54e-07`
+
+With profiler enabled (`results/eager_profile.json` and `results/graph_profile.json`):
+
+- Eager total time: `2.1865 s`
+- CUDA Graph total time: `0.5635 s`
+- Speedup: `3.88x`
 - Final loss delta: `9.54e-07`
 
 This satisfies:
