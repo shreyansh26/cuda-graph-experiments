@@ -6,8 +6,9 @@
   "batch_size": 128,
   "warmup_steps": 25,
   "train_steps": 1200,
-  "total_time_s": 1.297546038404107,
-  "avg_step_ms": 1.081288365336756,
+  "total_time_s": 1.3149616662412882,
+  "avg_step_ms": 1.095801388534407,
   "final_loss": 2.2924065589904785,
-  "trace_file": null
+  "trace_file": null,
+  "trace_files": []
 }

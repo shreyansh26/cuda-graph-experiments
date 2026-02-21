@@ -4,10 +4,13 @@
   "device": "NVIDIA H100 80GB HBM3",
   "seed": 1234,
   "batch_size": 128,
-  "warmup_steps": 20,
-  "train_steps": 300,
-  "total_time_s": 0.7226366549730301,
-  "avg_step_ms": 2.4087888499101004,
-  "final_loss": 2.2951717376708984,
-  "trace_file": "profiles/eager.json"
+  "warmup_steps": 25,
+  "train_steps": 1200,
+  "total_time_s": 2.1865102062001824,
+  "avg_step_ms": 1.8220918385001519,
+  "final_loss": 2.2924065589904785,
+  "trace_file": "profiles/eager.json",
+  "trace_files": [
+    "profiles/eager.json"
+  ]
 }
