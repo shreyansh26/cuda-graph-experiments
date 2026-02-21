@@ -1,0 +1,13 @@
+{
+  "mode": "eager",
+  "torch_version": "2.9.1+cu128",
+  "device": "NVIDIA H100 80GB HBM3",
+  "seed": 1234,
+  "batch_size": 128,
+  "warmup_steps": 25,
+  "train_steps": 1200,
+  "total_time_s": 1.297546038404107,
+  "avg_step_ms": 1.081288365336756,
+  "final_loss": 2.2924065589904785,
+  "trace_file": null
+}

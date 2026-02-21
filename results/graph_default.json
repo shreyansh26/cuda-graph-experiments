@@ -1,0 +1,13 @@
+{
+  "mode": "cuda_graph",
+  "torch_version": "2.9.1+cu128",
+  "device": "NVIDIA H100 80GB HBM3",
+  "seed": 1234,
+  "batch_size": 128,
+  "warmup_steps": 25,
+  "train_steps": 1200,
+  "total_time_s": 0.5449395403265953,
+  "avg_step_ms": 0.4541162836054961,
+  "final_loss": 2.292407512664795,
+  "trace_file": null
+}
