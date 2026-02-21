@@ -9,11 +9,6 @@ Profiling uses `torch.profiler.schedule(wait, warmup, active, repeat)` with `on_
 - `results/*.json`: benchmark/profile metrics from runs in this workspace
 - `profiles/*.json`: Chrome trace files (`eager.json`, `cuda_graph.json`) for Perfetto
 
-## Environment
-
-- Conda env: `shreyansh-env-py12`
-- GPU: `1` (via `CUDA_VISIBLE_DEVICES=1`)
-
 ## Run Benchmarks (no profiler)
 
 ```bash
