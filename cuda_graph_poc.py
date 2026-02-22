@@ -254,10 +254,8 @@ def run_once(args: argparse.Namespace) -> Dict[str, Any]:
 
         torch.cuda.current_stream().wait_stream(warmup_stream)
 
-        # Prime batch for capture (this performs one untimed training update).
-        prime_step = args.warmup_steps
-        static_x.copy_(inputs[prime_step], non_blocking=True)
-        static_y.copy_(targets[prime_step], non_blocking=True)
+        static_x.copy_(inputs[args.warmup_steps], non_blocking=True)
+        static_y.copy_(targets[args.warmup_steps], non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
         graph = torch.cuda.CUDAGraph()
@@ -320,13 +318,11 @@ def run_once(args: argparse.Namespace) -> Dict[str, Any]:
     trace_path = None
     if profiler is not None:
         if not trace_paths:
-            # Fallback for unexpected schedule edge cases.
             fallback_path = args.profile_dir / f"{trace_stem}.json"
             profiler.export_chrome_trace(str(fallback_path))
             trace_paths.append(fallback_path)
         trace_path = trace_paths[0]
 
-    # One final synchronized read for scalar loss reporting.
     final_loss = float(loss.detach().item())
 
     result: Dict[str, Any] = {
