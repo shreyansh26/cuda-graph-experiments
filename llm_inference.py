@@ -82,10 +82,12 @@ class ModelRunner:
     def _build_graph_batch_sizes(max_batch_size: int) -> List[int]:
         if max_batch_size <= 0:
             raise ValueError("max_batch_size must be > 0")
+        # Capture a small exact set first, then coarse-grained buckets in steps of 16.
         rounded_max_bs = 8 if max_batch_size <= 8 else ((max_batch_size + 15) // 16) * 16
         return [1, 2, 4, 8] + list(range(16, rounded_max_bs + 1, 16))
 
     def _select_graph_batch_size(self, batch_size: int) -> int:
+        # self.graph_bs is sorted ascending; this returns the smallest bucket >= batch_size.
         return next(bs for bs in self.graph_bs if bs >= batch_size)
 
     def build_prompt_batch(
@@ -120,6 +122,7 @@ class ModelRunner:
         if max_cache_len <= 0:
             raise ValueError("max_cache_len must be > 0")
 
+        # We capture one graph per batch-size bucket and choose at runtime by ceil(batch_size).
         graph_bs = self._build_graph_batch_sizes(max_batch_size)
         self.graph_bs = graph_bs
         self.graphs = {}
@@ -130,6 +133,7 @@ class ModelRunner:
         if pad_token_id is None:
             pad_token_id = 0 if self.eos_token_id is None else int(self.eos_token_id)
 
+        # Capture larger buckets first so the shared graph pool is sized from the largest case.
         for bs in reversed(graph_bs):
             graph = torch.cuda.CUDAGraph()
             past_key_values = StaticCache(
@@ -145,6 +149,7 @@ class ModelRunner:
             position_ids = torch.zeros((bs, 1), dtype=torch.int64, device=self.device)
             cache_position = torch.zeros((1,), dtype=torch.int64, device=self.device)
 
+            # One eager warmup to materialize kernels/allocations before capture.
             past_key_values.reset()
             _ = self.model(
                 input_ids=input_ids,
@@ -156,6 +161,7 @@ class ModelRunner:
             )
             past_key_values.reset()
 
+            # Capture with static tensor addresses; replay will reuse these exact buffers.
             with torch.cuda.graph(graph, self.graph_pool):
                 out = self.model(
                     input_ids=input_ids,
@@ -166,9 +172,11 @@ class ModelRunner:
                     return_dict=True,
                 )
             if self.graph_pool is None:
+                # Reuse one graph memory pool across all captures to reduce VRAM duplication.
                 self.graph_pool = graph.pool()
 
             self.graphs[bs] = graph
+            # Keep captured input/output tensors so caller can mutate inputs before replay.
             self.graph_vars[bs] = {
                 "past_key_values": past_key_values,
                 "input_ids": input_ids,
@@ -205,11 +213,13 @@ class ModelRunner:
             or self.graph_max_batch_size < batch_size
             or self.graph_max_cache_len < required_cache_len
         ):
+            # (Re)capture whenever current request exceeds captured batch/cache limits.
             self.capture_cudagraphs(
                 max_batch_size=batch_size,
                 max_cache_len=required_cache_len,
             )
 
+        # Pick the smallest captured bucket that can accommodate this request.
         graph_bs = self._select_graph_batch_size(batch_size)
         graph = self.graphs[graph_bs]
         graph_vars = self.graph_vars[graph_bs]
@@ -233,6 +243,7 @@ class ModelRunner:
             dtype=prompt_ids.dtype,
             device=prompt_ids.device,
         )
+        # Build a graph_bs-shaped prefill so KV cache layout matches the selected graph bucket.
         prefill_attention_mask = torch.zeros(
             (graph_bs, prompt_len),
             dtype=attention_mask.dtype,
@@ -241,8 +252,15 @@ class ModelRunner:
         prefill_input_ids[:batch_size].copy_(prompt_ids)
         prefill_attention_mask[:batch_size].copy_(attention_mask)
         if graph_bs > batch_size:
+            # Dummy rows must not be fully masked (can cause invalid attention softmax paths).
             prefill_attention_mask[batch_size:, -1] = 1
 
+        # Position ids are computed independently per row (dim=-1), never across rows.
+        # For a dummy row with mask [0, 0, ..., 1]:
+        #   cumsum -> [0, 0, ..., 1]
+        #   minus 1 -> [-1, -1, ..., 0]
+        #   masked_fill(mask == 0, 0) -> [0, 0, ..., 0]
+        # So dummy rows do not inherit any values from valid rows; they get neutral position ids.
         prefill_position_ids = prefill_attention_mask.to(torch.int64).cumsum(dim=-1) - 1
         prefill_position_ids.masked_fill_(prefill_attention_mask == 0, 0)
 
@@ -281,12 +299,15 @@ class ModelRunner:
                     torch.full_like(model_input_ids, eos_fill_id),
                     model_input_ids,
                 )
+            # Overwrite captured input buffers in-place; replay reads these current values.
             graph_input_ids.fill_(int(pad_token_id))
             graph_input_ids[:batch_size].copy_(model_input_ids)
             graph_position_ids.zero_()
             graph_position_ids[:batch_size].copy_(running_position_ids)
             graph_cache_position.copy_(running_cache_position)
+            # Executes the graph captured in capture_cudagraphs with current buffer contents.
             graph.replay()
+            # Dummy rows are ignored; only real request rows are consumed.
             logits = graph_logits[:batch_size, -1, :]
             next_token = torch.argmax(logits, dim=-1, keepdim=True)
             if eos_fill_id is not None:
@@ -299,6 +320,7 @@ class ModelRunner:
             unfinished = ~finished
             generated_lengths += unfinished.to(generated_lengths.dtype)
             finished |= self._eos_mask(next_token, eos_ids).squeeze(1)
+            # Advance per-sequence position and shared decode step for next replay.
             running_position_ids += 1
             running_cache_position += 1
 
@@ -512,6 +534,7 @@ class ModelRunner:
                 or self.graph_max_batch_size < int(prompt_ids.shape[0])
                 or self.graph_max_cache_len < required_cache_len
             ):
+                # Ensure warmup/timed loops measure replay path, not first-time capture.
                 self.capture_cudagraphs(
                     max_batch_size=int(prompt_ids.shape[0]),
                     max_cache_len=required_cache_len,
